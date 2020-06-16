@@ -24,6 +24,9 @@ class InputFeeder:
     def load_data(self):
         if self.input_type=='video':
             self.cap=cv2.VideoCapture(self.input_file)
+            self.frame_count = self.cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            #print('frame count', self.frame_count)
+            #self.cap.open(self.input_file)
         elif self.input_type=='cam':
             self.cap=cv2.VideoCapture(0)
         else:
@@ -35,8 +38,13 @@ class InputFeeder:
         If input_type is 'image', then it returns the same image.
         '''
         while True:
-            for _ in range(10):
-                _, frame=self.cap.read()
+            #for _ in range(10):
+            ret, frame=self.cap.read()
+            self.pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+            
+            if ret == 0 :
+                print('ret = 0')
+                break
             yield frame
 
 

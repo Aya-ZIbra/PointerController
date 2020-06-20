@@ -11,7 +11,7 @@ class model:
     '''
     Class for the General Model.
     '''
-    def __init__(self, model_name, ie, model_dir, device='CPU',extensions=None, nq = 1):
+    def __init__(self, model_name, ie, model_dir, device='CPU',extensions=None, nq = 1, precision = 'FP32'):
         '''
         TODO: Use this to set your instance variables.
         '''
@@ -20,6 +20,10 @@ class model:
         self.ie = ie
         self.model_dir = model_dir
         self.nq = nq
+        self.precision = precision
+        self.latency = []
+        self.input_processing_time = []
+        self.output_processing_time = []
 
     def load_model(self, model_xml = None):
         '''
@@ -28,42 +32,75 @@ class model:
         If your model requires any Plugins, this is where you can load them.
         '''
         if not model_xml:
-            model_xml = self.model_dir + "/intel/"+ self.model+"/FP32/"+self.model+".xml"
+            model_xml = self.model_dir + "/intel/"+ self.model+"/"+self.precision+"/"+self.model+".xml"
+            print(model_xml)
         model_bin = os.path.splitext(model_xml)[0] + ".bin"
         self.net = self.ie.read_network(model_xml, model_bin)
-        self.check_layers_support()
+        if self.device == 'CPU':
+            self.check_layers_support()
         self.exec_net = self.ie.load_network(self.net, self.device, num_requests = self.nq)
         print('Loading model ..... OK!')
-
     def check_layers_support(self):
+        
         layers = self.net.layers.keys()
         supported_layers = self.ie.query_network(network=self.net, device_name=self.device)
         unsupported_layers = [l for l in layers if l not in supported_layers]
+        
         if len(unsupported_layers) != 0:
-            print("Following layers are unsupported by {} device: {}".format(self.device, ','.join(unsupported_layers)))
+            print("Model {} : Following layers are unsupported by {} device: {}".format(self.model, self.device, ','.join(unsupported_layers)))
             raise UnsupportedLayersError
         print('Layers support checked ..... OK!')
         return 0
     
     def prepare_input(self, cap):
         self.frame = next(cap)
+        prepare_start = time.time()
         self.in_frame = self.preprocess_input()
+        self.input_processing_time.append(1000*(time.time() - prepare_start))
+        
     
     def async_infer(self, req_ID):
         input_blob = next(iter(self.net.inputs)) #to be changed per class
         Inf_req = self.exec_net.start_async(req_ID, {input_blob:self.in_frame})
     
-    def predict(self, cap):
+    def predict(self, cap,mode = 'async'):
+        self.mode = mode
+        if mode == 'async':
+            return self.predict_async(cap)
+        elif mode == 'sync':
+            return self.predict_sync(cap)
+        else:
+            raise UnknownInferenceMode
+    def predict_sync(self, cap):
+        while True:
+            
+            self.prepare_input(cap)
+         
+            self.async_infer(0)
+        
+            self.exec_net.requests[0].wait()
+            self.latency.append(self.exec_net.requests[0].latency)
+            start = time.time()
+            outputs = self.get_output(0)
+            self.output_processing_time.append(1000*(time.time() - start))
+            yield outputs
+        
+    def predict_async(self, cap):
+        print('Num infer requests = {}'.format(self.nq))
         cur_req_ID = 0
         ready_req_ID = cur_req_ID  - self.nq
         
         self.prepare_input(cap)
+        
         start = time.time()
         #print("model start time ", start)
         while True:
             if ready_req_ID >= 0:
                 self.exec_net.requests[ready_req_ID].wait()
+                self.latency.append(self.exec_net.requests[ready_req_ID].latency)
+                start = time.time()
                 outputs = self.get_output(ready_req_ID)
+                self.output_processing_time.append(1000*(time.time() - start))
     
             # infer next frame
             self.async_infer(cur_req_ID)
@@ -83,6 +120,7 @@ class model:
             #ret, frame = cap.read()
             try:
                 self.prepare_input(cap)
+                
             except StopIteration:
                 break
         for i in range(self.nq):
@@ -123,8 +161,10 @@ class GazeEstimator(model):
         LM_eyes, HP_vector = cap
         frame_left_eye, frame_right_eye = next(LM_eyes)
         self.hp_array = next(HP_vector)
+        prepare_start = time.time()
         self.left_eye_image = self.preprocess_input(frame_left_eye, 'left_eye_image')
         self.right_eye_image = self.preprocess_input(frame_right_eye,'right_eye_image')
+        self.input_processing_time.append(1000*(time.time() - prepare_start))
     
     def async_infer(self, req_ID):
         Inf_req = self.exec_net.start_async(req_ID, {'head_pose_angles': self.hp_array, 'left_eye_image': self.left_eye_image, 'right_eye_image': self.right_eye_image})
@@ -143,8 +183,10 @@ class HeadPoseDetector(model):
     def preprocess_output(self, out_gen):
         while True:
             array = next(out_gen)
+            start = time.time()
             pitch , roll , yaw = array
             hp_array = [yaw, pitch, roll]
+            self.output_processing_time[-1] +=(1000*(time.time() - start))
             yield hp_array
 
 class LandMarkDetector(model):
@@ -169,10 +211,12 @@ class LandMarkDetector(model):
         '''
         while True:
             output = next(out_gen)
+            start = time.time()
             result = self.Result(output, self.frame)
             # check single face detected
             frame_left_eye = result.square_crop_eye(result.left_eye,  0.1, self.frame)
             frame_right_eye = result.square_crop_eye(result.right_eye, 0.1, self.frame)
+            self.output_processing_time[-1] +=(1000*(time.time() - start))
             yield frame_left_eye, frame_right_eye
 
 class FaceDetector(model):
@@ -208,18 +252,17 @@ class FaceDetector(model):
         Before feeding the output of this model to the next model,
         you might have to preprocess the output. This function is where you can do that.
         '''
-        face_count = 0
         while True:
             outputs = next(out_gen)
+            start = time.time()
             result = self.Result(outputs[0])
             # check single face detected
-            pt = 0.5
-            if self.Result(outputs[1]).confidence > pt:
+            if self.Result(outputs[1]).confidence > self.pt:
                 raise MultipleFacesDetected
             result.rescale(self.frame,  1.04)
             frame_out = result.crop_frame(self.frame)
-            face_count+=1
+            
+            self.output_processing_time[-1] +=(1000*(time.time() - start))
             for i in range(pipeline_branch_count):
-                #print ("next FD {}".format(face_count))
                 yield frame_out
     

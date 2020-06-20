@@ -9,6 +9,7 @@ Sample usage:
 '''
 import cv2
 from numpy import ndarray
+import time
 
 class InputFeeder:
     def __init__(self, input_type, input_file=None):
@@ -20,11 +21,13 @@ class InputFeeder:
         self.input_type=input_type
         if input_type=='video' or input_type=='image':
             self.input_file=input_file
-    
+        self.cap_time = []
+        
     def load_data(self):
         if self.input_type=='video':
             self.cap=cv2.VideoCapture(self.input_file)
             self.frame_count = self.cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            self.frame_start_time_queue = []
             #print('frame count', self.frame_count)
             #self.cap.open(self.input_file)
         elif self.input_type=='cam':
@@ -34,17 +37,20 @@ class InputFeeder:
 
     def next_batch(self):
         '''
-        Returns the next image from either a video file or webcam.
+        Returns the next image from either a video file or webcam
         If input_type is 'image', then it returns the same image.
         '''
         while True:
             #for _ in range(10):
+            cap_start = time.time()
+            self.frame_start_time_queue.append(time.time())
             ret, frame=self.cap.read()
             self.pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
             
             if ret == 0 :
                 print('ret = 0')
                 break
+            self.cap_time.append(1000*(time.time()-cap_start))
             yield frame
 
 

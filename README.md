@@ -1,12 +1,14 @@
 # Computer Pointer Controller
 
-*TODO:* Write a short introduction to your project
+That is a project that uses Intel OpenVINO toolkit to deploy AI models for PC pointer controller application. 
 
 ## Project Set Up and Installation
 *TODO:* Explain the setup procedures to run your project. For instance, this can include your project directory structure, the models you need to download and where to place them etc. Also include details about how to install the dependencies your project requires.
 
+
 **Models Download**
 ```bash
+cd src
 !/opt/intel/openvino/deployment_tools/tools/model_downloader/downloader.py --name face-detection-retail-0004 -o models
 !/opt/intel/openvino/deployment_tools/tools/model_downloader/downloader.py --name head-pose-estimation-adas-0001 -o models
 !/opt/intel/openvino/deployment_tools/tools/model_downloader/downloader.py --name landmarks-regression-retail-0009 -o models
@@ -25,13 +27,43 @@ Related links:
 ## Demo
 *TODO:* Explain how to run a basic demo of your model.
 
+A basic demo can be run using a bash run script in the src directory.  It takes 4 arguments:
+a) Input stream 
+b) Device used for Face detection inference
+c) Models' precision
+d) Number of requests
+
+```bash
+cd src
+./run.sh ../bin/demo.mp4 CPU FP32 1 
+```
+The python application has a visualisation flag which is set to False by default. 
+The run script sets the visualization to true. If you need to run the script for performance analysis, please remove the "-v".
+
+```bash
+INPUT_FILE=$1
+DEVICE=$2
+FP_MODEL=$3
+nq=$4
+
+# The default path for the job is the user's home directory,
+#  change directory to where the files are.
+cd $PBS_O_WORKDIR
+
+
+python3 demo.py -m models -i $INPUT_FILE \
+                            -FP $FP_MODEL \
+                            -d $DEVICE\
+                            -nq $nq \
+                            -v
+```
 
 ## Documentation
 *TODO:* Include any documentation that users might need to better understand your project code. For instance, this is a good place to explain the command line arguments that your project supports.
 
 ```
-usage: demo.py [-h] -m MODEL_DIR -i INPUT [-d DEVICE] [-l CPU_EXTENSION] [-FP FP] [-nq NUM_REQUESTS]
-               [-c CONFIDENCE] [-o OUTPUT_FILE]
+usage: demo.py [-h] -m MODEL_DIR -i INPUT [-d DEVICE] [-l CPU_EXTENSION] [-FP FP] [-nq NUM_REQUESTS] [-c CONFIDENCE]
+               [-mouse_precision MOUSE_PRECISION] [-mouse_speed MOUSE_SPEED] [-v]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -40,16 +72,21 @@ optional arguments:
   -i INPUT, --input INPUT
                         Path to video file or image.'cam' for capturing video stream from camera
   -d DEVICE, --device DEVICE
-                        Specify the target device to infer on; CPU, GPU, FPGA or MYRIAD is acceptable. Looksfor
-                        a suitable plugin for device specified(CPU by default)
+                        Specify the target device to infer on; CPU, GPU, FPGA or MYRIAD is acceptable. Looksfor a suitable plugin for
+                        device specified(CPU by default)
   -l CPU_EXTENSION, --cpu_extension CPU_EXTENSION
-                        MKLDNN (CPU)-targeted custom layers. Absolute path to a shared library with the kernels
-                        impl.
+                        MKLDNN (CPU)-targeted custom layers. Absolute path to a shared library with the kernels impl.
   -FP FP, --FP FP       Model precision
   -nq NUM_REQUESTS, --num_requests NUM_REQUESTS
                         Number of async requests
   -c CONFIDENCE, --confidence CONFIDENCE
                         Probability threshold for detections filtering
+  -mouse_precision MOUSE_PRECISION, --mouse_precision MOUSE_PRECISION
+                        mouse controller precision: high, low, medium
+  -mouse_speed MOUSE_SPEED, --mouse_speed MOUSE_SPEED
+                        mouse controller speed: fast, slow, medium
+  -v, --visualize       Visulization of intermediate models. Do not set this flag for performance analysis. This flag forces sync
+                        inference mode
 ```
 
 ## Benchmarks

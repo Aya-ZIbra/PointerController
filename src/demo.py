@@ -5,7 +5,8 @@ import cv2
 import time
 from argparse import ArgumentParser
 from input_feeder import InputFeeder
-#from mouse_controller import MouseController
+import logging as log
+from mouse_controller import MouseController
 
 ### arguments ## ADD ARGPARSER
 def args_parser():
@@ -35,25 +36,30 @@ def args_parser():
     parser.add_argument("-nq", "--num_requests", default =1, type=int, help= "Number of async requests")
     parser.add_argument("-c", "--confidence", default=0.5, type=float,
                         help="Probability threshold for detections filtering")
-    parser.add_argument('-o', "--output_file", default = None, type=str, help = "Demo output video. Created only if -o is given")
+    parser.add_argument("-mouse_precision", "--mouse_precision", default= 'medium', type= str, help="mouse controller precision: high, low, medium")
+    parser.add_argument("-mouse_speed","--mouse_speed", default='medium', type=str, help="mouse controller speed: fast, slow, medium")
+    parser.add_argument('-v', "--visualize", action='store_true', help = "Visulization of intermediate models. Do not set this flag for performance analysis. This flag forces sync inference mode")
     
     return parser
 
 def main():
+    log.basicConfig(filename='MouseController.log',level=log.DEBUG)
+    
     args = args_parser().parse_args()
     model_dir = args.model_dir
     FP = args.FP
     device = args.device
     input_stream = args.input
-    out_video = args.output_file              
+      
+    
     FD_model = "face-detection-retail-0004"
     LM_model = 'landmarks-regression-retail-0009'
     HP_model = "head-pose-estimation-adas-0001"
     GE_model = "gaze-estimation-adas-0002"
-    sync = 1
+    
     ####
-
     ie = IECore()
+    log.info("Initializing Inference Engine")
     #Loading models
     load_start = time.time()
     FaceDetect = FaceDetector(FD_model, ie, model_dir, device, nq = args.num_requests , precision = FP )
@@ -75,10 +81,14 @@ def main():
     else:
         feed=InputFeeder(input_type='video', input_file= input_stream)
     feed.load_data()
+    log.info('Input data loaded successfully...')
     feed_gen = feed.next_batch()
 
 
-    FD_outgen = FaceDetect.predict(feed_gen, 'async')
+    if args.visualize:
+        FD_outgen = FaceDetect.predict(feed_gen, 'sync')
+    else:
+        FD_outgen = FaceDetect.predict(feed_gen, 'async')
     FD_facegen = FaceDetect.preprocess_output(FD_outgen,2)
     
 
@@ -91,12 +101,14 @@ def main():
     gaze_outgen = GE.predict(( LM_eyes, HP_vector), 'sync')
 
     ### Init Mouse controller #####################
-    #mouse = MouseController('medium', 'medium')
+    mouse = MouseController(args.mouse_precision, args.mouse_speed)
     ### Init Video Demo ###########################
-    if out_video:
-        cap = cv2.VideoCapture("/home/u37265/Project3-Udacity/PointerController/bin/demo.mp4")
-        cap.open("/home/u37265/Project3-Udacity/PointerController/bin/demo.mp4")
-
+    if args.visualize:
+        cap = cv2.VideoCapture(input_stream)
+        cap.open(input_stream)
+        if not cap.isOpened():
+            log.error("ERROR! Unable to open video source for demo")
+            
         W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = int(cap.get(cv2.CAP_PROP_FPS))
@@ -104,7 +116,7 @@ def main():
         
         cap.release()
 
-        mousevid = cv2.VideoWriter(out_video, cv2.VideoWriter_fourcc(*'MP4V'), fps, (W, H), True)
+        mousevid = cv2.VideoWriter('out.mp4', cv2.VideoWriter_fourcc(*'MP4V'), fps, (W, H), True)
     ################################################
     start = time.time()
     i = 0
@@ -115,20 +127,23 @@ def main():
             
         frame = FaceDetect.frame
         #### Move mouse
-        #mouse.move(dx,dy)
+        mouse.move(dx,dy)
         #### Create Vidoe Demo 
-        if out_video:
+        if args.visualize:
+            FaceDetect.result.visualize(frame)
+            LandMark.result.visualize(frame, FaceDetect.result.top_corner, color = [0,255,0])
+            GE.visualize(frame, gaze, LandMark.result.right_eye_shifted, LandMark.result.left_eye_shifted)
+
             dx, dy = int(10*dx) , int(10*dy)
             end_point = (start_point[0]+ dx, start_point[1]- dy)
-            #time_stamp1 = time.time()
-            framex = cv2.circle(frame, end_point ,20, [255,0,0], -1)
+            framex = cv2.circle(frame, end_point ,20, [0,255,0], -1)
             mousevid.write(framex)
-            #wframe = 1000*(time.time()-time_stamp1)
-            #print(wframe, " ms") #average 10 ms
             start_point = end_point
         i+=1
-    print("i = ", i, "and feed.pos = ", feed.pos)
+    #print("i = ", i, "and feed.pos = ", feed.pos)
+    log.info("Completed {} of {} frames. \n Check performance figures in {}".format(i, feed.frame_count, 'stats_'+FP+'_'+device+'.txt'))
     tp = feed.frame_count//(time.time()-start)
+    
     with open( 'stats_'+FP+'_'+device+'.txt', 'a') as f:
         f.write("## Frame capture time (ms) = {:.2f} \n".format(np.mean(feed.cap_time)))
         
@@ -141,12 +156,11 @@ def main():
         
         f.write("Gaze Estimation Latency (ms) = {:.2f} \n".format(np.mean(GE.latency)))
         
-        if sync:
-            f.write("## Input processing \n")
-            f.write("Face Detection Input Processing (ms) = {:.2f} \n".format(np.mean(FaceDetect.input_processing_time)))
-            f.write("LandMark Detection Input Processing (ms) = {:.2f} \n".format(np.mean(LandMark.input_processing_time)))
-            f.write("Head pose Detection Input Processing (ms) = {:.2f} \n".format(np.mean(HeadPose.input_processing_time)))
-            f.write("Gaze Estimation Input Processing  (ms) = {:.2f} \n".format(np.mean(GE.input_processing_time)))
+        f.write("## Input processing \n")
+        f.write("Face Detection Input Processing (ms) = {:.2f} \n".format(np.mean(FaceDetect.input_processing_time)))
+        f.write("LandMark Detection Input Processing (ms) = {:.2f} \n".format(np.mean(LandMark.input_processing_time)))
+        f.write("Head pose Detection Input Processing (ms) = {:.2f} \n".format(np.mean(HeadPose.input_processing_time)))
+        f.write("Gaze Estimation Input Processing  (ms) = {:.2f} \n".format(np.mean(GE.input_processing_time)))
         
         f.write("## Output processing \n")
         f.write("Face Detection output Processing (ms) = {:.2f} \n".format(np.mean(FaceDetect.output_processing_time)))
@@ -157,5 +171,6 @@ def main():
         f.write("\n throughput = {:.2f} fps ( {} ms per frame) \n".format(tp , 1000/tp ))  
         f.write("Frame latency (ms):  {} \n".format(latency[:10] ) ) 
         f.write("Average Frame Latency (ms): {:0.2f} \n".format(np.mean(latency[10:-10])))
+
 if __name__ == '__main__':
     main()

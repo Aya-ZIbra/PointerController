@@ -10,6 +10,8 @@ Sample usage:
 import cv2
 from numpy import ndarray
 import time
+import os
+import logging as log
 
 class InputFeeder:
     def __init__(self, input_type, input_file=None):
@@ -21,6 +23,11 @@ class InputFeeder:
         self.input_type=input_type
         if input_type=='video' or input_type=='image':
             self.input_file=input_file
+            if os.path.isfile(self.input_file):
+                log.info("Input stream file exists")
+            else:
+                log.error("Specified input file doesn't exist")
+                raise InputFileNotFound
         self.cap_time = []
         
     def load_data(self):
@@ -48,7 +55,6 @@ class InputFeeder:
             self.pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
             
             if ret == 0 :
-                print('ret = 0')
                 break
             self.cap_time.append(1000*(time.time()-cap_start))
             yield frame

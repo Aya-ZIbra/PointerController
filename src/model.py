@@ -6,7 +6,7 @@ import os
 import cv2
 import time
 import numpy as np
-
+import logging as log
 class model:
     '''
     Class for the General Model.
@@ -33,13 +33,13 @@ class model:
         '''
         if not model_xml:
             model_xml = self.model_dir + "/intel/"+ self.model+"/"+self.precision+"/"+self.model+".xml"
-            print(model_xml)
+            log.info("Reading IR model from {}".format(model_xml))
         model_bin = os.path.splitext(model_xml)[0] + ".bin"
         self.net = self.ie.read_network(model_xml, model_bin)
         if self.device == 'CPU':
             self.check_layers_support()
         self.exec_net = self.ie.load_network(self.net, self.device, num_requests = self.nq)
-        print('Loading model ..... OK!')
+        log.info('Loading model ..... OK!')
     def check_layers_support(self):
         
         layers = self.net.layers.keys()
@@ -47,9 +47,9 @@ class model:
         unsupported_layers = [l for l in layers if l not in supported_layers]
         
         if len(unsupported_layers) != 0:
-            print("Model {} : Following layers are unsupported by {} device: {}".format(self.model, self.device, ','.join(unsupported_layers)))
+            log.error("Model {} : Following layers are unsupported by {} device: {}".format(self.model, self.device, ','.join(unsupported_layers)))
             raise UnsupportedLayersError
-        print('Layers support checked ..... OK!')
+        log.info('Layers support checked ..... OK!')
         return 0
     
     def prepare_input(self, cap):
@@ -70,8 +70,10 @@ class model:
         elif mode == 'sync':
             return self.predict_sync(cap)
         else:
+            log.error('Predict function expects inference mode to be \"sync\" or \"async\" ')
             raise UnknownInferenceMode
     def predict_sync(self, cap):
+        log.info('Sync Inference of model {}'.format(self.model))
         while True:
             
             self.prepare_input(cap)
@@ -86,14 +88,15 @@ class model:
             yield outputs
         
     def predict_async(self, cap):
-        print('Num infer requests = {}'.format(self.nq))
+        log.info('Async Inference of model {}'.format(self.model))
+        log.info('Num infer requests = {}'.format(self.nq))
         cur_req_ID = 0
         ready_req_ID = cur_req_ID  - self.nq
         
         self.prepare_input(cap)
         
         start = time.time()
-        #print("model start time ", start)
+        
         while True:
             if ready_req_ID >= 0:
                 self.exec_net.requests[ready_req_ID].wait()
@@ -140,16 +143,15 @@ class model:
         outputs = outputs[key]
         outputs = outputs.squeeze()
         return outputs
-    
-    def check_model(self):
-        raise NotImplementedError
 
     def preprocess_input(self, image = None, input_blob = None):
         if not isinstance(image,np.ndarray): 
             image = self.frame
         if input_blob == None:
             input_blob = next(iter(self.net.inputs))
-        assert image.any != None
+        if image.any == None:
+            log.error("checkpoint ERROR! blank FRAME grabbed")
+            raise BlankFrameError
         # Reshaping data
         n, c, h, w = self.net.inputs[input_blob].shape
         in_frame = cv2.resize(image, (w, h))
@@ -168,7 +170,19 @@ class GazeEstimator(model):
     
     def async_infer(self, req_ID):
         Inf_req = self.exec_net.start_async(req_ID, {'head_pose_angles': self.hp_array, 'left_eye_image': self.left_eye_image, 'right_eye_image': self.right_eye_image})
-
+    
+    def visualize(self, frame, gaze, right_eye, left_eye, color = (255,0,0)):
+        dx, dy, _ = gaze
+        dx, dy= int(100*dx), int(100*dy)
+        thickness = 6
+        arrow1_start = right_eye #LandMark.result.right_eye_shifted
+        arrow1_end = (arrow1_start[0]+ dx, arrow1_start[1]- dy)
+        cv2.arrowedLine(frame, arrow1_start, arrow1_end, 
+                                     color, thickness, tipLength=0.3)
+        arrow2_start = left_eye #LandMark.result.left_eye_shifted
+        arrow2_end = (arrow2_start[0]+ dx, arrow2_start[1]- dy)
+        cv2.arrowedLine(frame, arrow2_start, arrow2_end, 
+                                     color, thickness, tipLength=0.3)
         
 class HeadPoseDetector(model):
     def get_output(self, req_ID):
@@ -204,6 +218,15 @@ class LandMarkDetector(model):
             xmax, ymax = (p_eye[0]+L, p_eye[1] +L)
             frame_eye = frame[ymin:ymax, xmin:xmax]
             return frame_eye
+        def visualize(self, frame, shift, color = [0,255,0]):
+            #print(shift)
+            self.left_eye_shifted  = (shift[0]+ self.left_eye[0], shift[1]+ self.left_eye[1]) 
+            #print(org)
+            cv2.putText(frame,"L",self.left_eye_shifted, cv2.FONT_HERSHEY_SIMPLEX,2, color, 5)
+            
+            self.right_eye_shifted  = (shift[0]+ self.right_eye[0], shift[1]+ self.right_eye[1])
+            cv2.putText(frame,"R",self.right_eye_shifted, cv2.FONT_HERSHEY_SIMPLEX, 2, color, 5)
+            
     def preprocess_output(self, out_gen):
         '''
         Before feeding the output of this model to the next model,
@@ -212,10 +235,10 @@ class LandMarkDetector(model):
         while True:
             output = next(out_gen)
             start = time.time()
-            result = self.Result(output, self.frame)
+            self.result = self.Result(output, self.frame)
             # check single face detected
-            frame_left_eye = result.square_crop_eye(result.left_eye,  0.1, self.frame)
-            frame_right_eye = result.square_crop_eye(result.right_eye, 0.1, self.frame)
+            frame_left_eye = self.result.square_crop_eye(self.result.left_eye,  0.1, self.frame)
+            frame_right_eye = self.result.square_crop_eye(self.result.right_eye, 0.1, self.frame)
             self.output_processing_time[-1] +=(1000*(time.time() - start))
             yield frame_left_eye, frame_right_eye
 
@@ -236,9 +259,9 @@ class FaceDetector(model):
             x,y = self.bot_corner
             self.bot_corner = (int(x*W_init + delta), int(y*H_init + delta))
 
-        def draw_box(self, frame):
+        def visualize(self, frame, color=[255,0,0]):
             #frameX = cv2.circle(frame, top_corner,10, [255,0,0], -1)
-            cv2.rectangle(frame,self.top_corner, self.bot_corner, [255,0,0], 2)
+            cv2.rectangle(frame,self.top_corner, self.bot_corner, color, 2)
             return frame
         
         def crop_frame(self, frame):
@@ -247,7 +270,7 @@ class FaceDetector(model):
             frameX = frame[ymin:ymax, xmin:xmax]
             return frameX
 
-    def preprocess_output(self, out_gen, pipeline_branch_count = 2):
+    def preprocess_output(self, out_gen, pipeline_branch_count = 2, visualize = False):
         '''
         Before feeding the output of this model to the next model,
         you might have to preprocess the output. This function is where you can do that.
@@ -255,12 +278,13 @@ class FaceDetector(model):
         while True:
             outputs = next(out_gen)
             start = time.time()
-            result = self.Result(outputs[0])
+            self.result = self.Result(outputs[0])
             # check single face detected
             if self.Result(outputs[1]).confidence > self.pt:
+                log.error("More than one face is detected with confidence larger than {}".format(self.pt))
                 raise MultipleFacesDetected
-            result.rescale(self.frame,  1.04)
-            frame_out = result.crop_frame(self.frame)
+            self.result.rescale(self.frame,  1.04)
+            frame_out = self.result.crop_frame(self.frame)
             
             self.output_processing_time[-1] +=(1000*(time.time() - start))
             for i in range(pipeline_branch_count):

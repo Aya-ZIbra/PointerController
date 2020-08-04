@@ -1,7 +1,7 @@
 # Computer Pointer Controller
 
 That is a project that uses Intel OpenVINO toolkit to deploy AI models for PC pointer controller application. 
-
+image
 ## Project Set Up and Installation
 *TODO:* Explain the setup procedures to run your project. For instance, this can include your project directory structure, the models you need to download and where to place them etc. Also include details about how to install the dependencies your project requires.
 
